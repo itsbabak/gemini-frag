@@ -123,7 +123,7 @@ jobs:
               <TextView
                   android:layout_width="match_parent"
                   android:layout_height="wrap_content"
-                  :text="کانفیگ JSON فرگمنت (بدون Xray - موتور ByeDPI):"
+                  android:text="کانفیگ JSON فرگمنت (بدون Xray - موتور ByeDPI):"
                   android:textSize="15sp"
                   android:textStyle="bold"
                   android:paddingBottom="8dp" />
@@ -325,9 +325,9 @@ jobs:
           import android.os.Build;
           import android.os.ParcelFileDescriptor;
           import net.typeblog.socks.util.FragmentConfigParser;
-          import net.typeblog.socks.util.Utility;
 
           import java.io.File;
+          import java.lang.reflect.Method;
           import java.util.ArrayList;
           import java.util.List;
 
@@ -394,7 +394,18 @@ jobs:
                       vpnInterface = builder.establish();
                       if (vpnInterface != null) {
                           int fd = vpnInterface.getFd();
-                          Utility.startVpn(fd, "10.0.0.2", "255.255.255.0", "127.0.0.1", socksPort, "1.1.1.1", 1500);
+                          Class<?> utilClass = Class.forName("net.typeblog.socks.util.Utility");
+                          for (Method m : utilClass.getDeclaredMethods()) {
+                              if (m.getName().equals("startVpn")) {
+                                  Class<?>[] params = m.getParameterTypes();
+                                  if (params.length == 7) {
+                                      m.invoke(null, fd, "10.0.0.2", "255.255.255.0", "127.0.0.1", socksPort, "1.1.1.1", 1500);
+                                  } else if (params.length == 6) {
+                                      m.invoke(null, fd, "10.0.0.2", "255.255.255.0", "127.0.0.1", socksPort, "1.1.1.1");
+                                  }
+                                  break;
+                              }
+                          }
                       }
                   } catch (Exception e) {
                       e.printStackTrace();
@@ -411,7 +422,13 @@ jobs:
               private void stopVpn() {
                   stopByeDpi();
                   try {
-                      Utility.stopVpn();
+                      Class<?> utilClass = Class.forName("net.typeblog.socks.util.Utility");
+                      for (Method m : utilClass.getDeclaredMethods()) {
+                          if (m.getName().equals("stopVpn") && m.getParameterTypes().length == 0) {
+                              m.invoke(null);
+                              break;
+                          }
+                      }
                       if (vpnInterface != null) {
                           vpnInterface.close();
                           vpnInterface = null;
@@ -467,7 +484,7 @@ jobs:
       - name: Build Signed Release APK
         run: |
           chmod +x gradlew
-          ./gradlew assembleRelease \
+          ./gradlew assembleRelease --stacktrace \
             -Pandroid.injected.signing.store.file=$(pwd)/app/release.jks \
             -Pandroid.injected.signing.store.password=123456 \
             -Pandroid.injected.signing.key.alias=fragment \
