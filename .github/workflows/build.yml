@@ -3,9 +3,7 @@ name: Build SocksDroid Fragment (ByeDPI)
 
 on:
   push:
-    branches:
-      - main
-      - master
+    branches: [ main, master ]
   workflow_dispatch:
 
 permissions:
@@ -13,59 +11,595 @@ permissions:
 
 jobs:
   build:
-    name: Build Fragment ARM64 APK
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
 
     steps:
-      # 1. دریافت سورس
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-
-      # 2. دریافت SocksDroid اصلی و ادغام فایل‌های سفارشی
-      - name: Clone Base SocksDroid & Merge Custom Files
+      # 1. دریافت سورس اصلی SocksDroid
+      - name: Clone Base SocksDroid (with Submodules)
         shell: bash
         run: |
           set -euo pipefail
 
-          git clone --depth 1 https://github.com/bndeff/socksdroid.git base_repo
+          git clone --depth 1 --recurse-submodules https://github.com/bndeff/socksdroid.git .
 
-          rm -rf base_repo/.git
+          rm -rf .git
 
-          cp -rn base_repo/. ./
+          test -f gradlew
+          test -f app/build.gradle
 
-          cp -f custom_overlay/app/build.gradle app/build.gradle
-          cp -f custom_overlay/app/src/main/AndroidManifest.xml app/src/main/AndroidManifest.xml
+      # 2. حذف فایل‌های قدیمی و ساخت برنامه سفارشی
+      - name: Clean Old Kotlin/Java Files & Create Custom App
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          find app/src/main/java -type f ! -name "Utility.*" -delete
 
           mkdir -p app/src/main/java/net/typeblog/socks/util
           mkdir -p app/src/main/res/layout
 
-          cp -f custom_overlay/app/src/main/java/net/typeblog/socks/MainActivity.java app/src/main/java/net/typeblog/socks/MainActivity.java
+          cat << 'EOF' > app/build.gradle
+          plugins {
+              id 'com.android.application'
+          }
 
-          cp -f custom_overlay/app/src/main/java/net/typeblog/socks/SocksVpnService.java app/src/main/java/net/typeblog/socks/SocksVpnService.java
+          android {
+              namespace 'net.typeblog.socks'
+              compileSdk 34
 
-          cp -f custom_overlay/app/src/main/java/net/typeblog/socks/util/FragmentConfigParser.java app/src/main/java/net/typeblog/socks/util/FragmentConfigParser.java
+              defaultConfig {
+                  applicationId "net.typeblog.socks.fragment"
+                  minSdk 24
+                  targetSdk 34
+                  versionCode 20
+                  versionName "2.0-Fragment"
 
-          cp -f custom_overlay/app/src/main/res/layout/activity_main.xml app/src/main/res/layout/activity_main.xml
+                  ndk {
+                      abiFilters 'arm64-v8a'
+                  }
+              }
 
-          echo "Custom files merged successfully."
+              externalNativeBuild {
+                  ndkBuild {
+                      path 'src/main/jni/Android.mk'
+                  }
+              }
+
+              buildTypes {
+                  release {
+                      minifyEnabled false
+                      proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+                  }
+              }
+
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
+
+              packagingOptions {
+                  jniLibs {
+                      useLegacyPackaging = true
+                  }
+              }
+          }
+
+          dependencies {
+              implementation 'androidx.appcompat:appcompat:1.6.1'
+              implementation 'com.google.android.material:material:1.11.0'
+          }
+          EOF
+
+          cat << 'EOF' > app/src/main/AndroidManifest.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+              <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+              <application
+                  android:allowBackup="true"
+                  android:icon="@mipmap/ic_launcher"
+                  android:label="Fragment VPN"
+                  android:theme="@style/Theme.MaterialComponents.DayNight.DarkActionBar"
+                  android:extractNativeLibs="true">
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+
+                  <service
+                      android:name=".SocksVpnService"
+                      android:permission="android.permission.BIND_VPN_SERVICE"
+                      android:foregroundServiceType="specialUse"
+                      android:exported="false">
+                      <intent-filter>
+                          <action android:name="android.net.VpnService" />
+                      </intent-filter>
+                      <property
+                          android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                          android:value="vpn" />
+                  </service>
+              </application>
+          </manifest>
+          EOF
+
+          cat << 'EOF' > app/src/main/res/layout/activity_main.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+              android:layout_width="match_parent"
+              android:layout_height="match_parent"
+              android:orientation="vertical"
+              android:padding="16dp">
+
+              <TextView
+                  android:layout_width="match_parent"
+                  android:layout_height="wrap_content"
+                  android:text="کانفیگ JSON فرگمنت (بدون Xray - موتور ByeDPI):"
+                  android:textSize="15sp"
+                  android:textStyle="bold"
+                  android:paddingBottom="8dp" />
+
+              <EditText
+                  android:id="@+id/et_json_config"
+                  android:layout_width="match_parent"
+                  android:layout_height="0dp"
+                  android:layout_weight="1"
+                  android:gravity="top|start"
+                  android:hint="متن JSON خود را اینجا قرار دهید..."
+                  android:inputType="textMultiLine|textNoSuggestions"
+                  android:fontFamily="monospace"
+                  android:textSize="12sp"
+                  android:background="@android:drawable/edit_text"
+                  android:padding="10dp" />
+
+              <Button
+                  android:id="@+id/btn_toggle_vpn"
+                  android:layout_width="match_parent"
+                  android:layout_height="54dp"
+                  android:layout_marginTop="12dp"
+                  android:text="اتصال (Connect)"
+                  android:textSize="16sp" />
+
+          </LinearLayout>
+          EOF
+
+          cat << 'EOF' > app/src/main/java/net/typeblog/socks/util/FragmentConfigParser.java
+          package net.typeblog.socks.util;
+
+          import org.json.JSONArray;
+          import org.json.JSONObject;
+          import java.util.ArrayList;
+          import java.util.List;
+
+          public class FragmentConfigParser {
+
+              public static class ParsedConfig {
+                  public int localPort = 10808;
+                  public String dnsServer = "1.1.1.1";
+                  public List<String> byeDpiArgs = new ArrayList<>();
+              }
+
+              public static ParsedConfig parse(String jsonString) {
+                  ParsedConfig result = new ParsedConfig();
+
+                  try {
+                      JSONObject root = new JSONObject(jsonString);
+
+                      if (root.has("inbounds")) {
+                          JSONArray inbounds = root.getJSONArray("inbounds");
+
+                          if (inbounds.length() > 0) {
+                              result.localPort = inbounds.getJSONObject(0)
+                                  .optInt("port", 10808);
+                          }
+                      }
+
+                      result.byeDpiArgs.add("-i");
+                      result.byeDpiArgs.add("127.0.0.1");
+                      result.byeDpiArgs.add("-p");
+                      result.byeDpiArgs.add(String.valueOf(result.localPort));
+
+                      int splitPos = 2;
+
+                      if (root.has("outbounds")) {
+                          JSONArray outbounds = root.getJSONArray("outbounds");
+
+                          for (int i = 0; i < outbounds.length(); i++) {
+                              JSONObject ob = outbounds.getJSONObject(i);
+
+                              if (ob.has("settings") &&
+                                  ob.getJSONObject("settings").has("fragment")) {
+
+                                  JSONObject frag = ob.getJSONObject("settings")
+                                      .getJSONObject("fragment");
+
+                                  String length = frag.optString("length", "10-400");
+
+                                  if (length.contains("-")) {
+                                      splitPos = Integer.parseInt(
+                                          length.split("-")[0].trim()
+                                      );
+                                  }
+
+                                  break;
+                              }
+                          }
+                      }
+
+                      result.byeDpiArgs.add("-s");
+                      result.byeDpiArgs.add(String.valueOf(Math.max(1, splitPos)));
+                      result.byeDpiArgs.add("-o");
+                      result.byeDpiArgs.add("1");
+                      result.byeDpiArgs.add("-r");
+                      result.byeDpiArgs.add("1+s");
+
+                  } catch (Exception e) {
+                      result.byeDpiArgs.clear();
+
+                      result.byeDpiArgs.add("-i");
+                      result.byeDpiArgs.add("127.0.0.1");
+                      result.byeDpiArgs.add("-p");
+                      result.byeDpiArgs.add("10808");
+                      result.byeDpiArgs.add("-s");
+                      result.byeDpiArgs.add("2");
+                      result.byeDpiArgs.add("-o");
+                      result.byeDpiArgs.add("1");
+                  }
+
+                  return result;
+              }
+          }
+          EOF
+
+          cat << 'EOF' > app/src/main/java/net/typeblog/socks/MainActivity.java
+          package net.typeblog.socks;
+
+          import android.content.Intent;
+          import android.content.SharedPreferences;
+          import android.net.VpnService;
+          import android.os.Bundle;
+          import android.widget.Button;
+          import android.widget.EditText;
+          import android.widget.Toast;
+
+          import androidx.activity.result.ActivityResultLauncher;
+          import androidx.activity.result.contract.ActivityResultContracts;
+          import androidx.appcompat.app.AppCompatActivity;
+
+          public class MainActivity extends AppCompatActivity {
+
+              private static final String PREFS_NAME = "FragmentVpnPrefs";
+              private static final String KEY_JSON = "saved_json";
+
+              private static final String DEFAULT_JSON = "{\n" +
+                      "  \"inbounds\": [{\"port\": 10808, \"listen\": \"127.0.0.1\", \"protocol\": \"socks\"}],\n" +
+                      "  \"outbounds\": [{\n" +
+                      "    \"tag\": \"fragment-out\",\n" +
+                      "    \"protocol\": \"freedom\",\n" +
+                      "    \"settings\": {\n" +
+                      "      \"fragment\": {\"packets\": \"tlshello\", \"length\": \"10-400\", \"interval\": \"1-30\"}\n" +
+                      "    }\n" +
+                      "  }]\n" +
+                      "}";
+
+              private EditText etJsonConfig;
+              private Button btnToggle;
+              private boolean isRunning = false;
+
+              private final ActivityResultLauncher<Intent> vpnPermissionLauncher =
+                      registerForActivityResult(
+                          new ActivityResultContracts.StartActivityForResult(),
+                          result -> {
+                              if (result.getResultCode() == RESULT_OK) {
+                                  startVpnService();
+                              } else {
+                                  Toast.makeText(
+                                      this,
+                                      "مجوز VPN داده نشد",
+                                      Toast.LENGTH_SHORT
+                                  ).show();
+                              }
+                          }
+                      );
+
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+                  setContentView(R.layout.activity_main);
+
+                  etJsonConfig = findViewById(R.id.et_json_config);
+                  btnToggle = findViewById(R.id.btn_toggle_vpn);
+
+                  SharedPreferences prefs =
+                      getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+
+                  etJsonConfig.setText(
+                      prefs.getString(KEY_JSON, DEFAULT_JSON)
+                  );
+
+                  btnToggle.setOnClickListener(v -> {
+                      if (!isRunning) {
+                          String json = etJsonConfig.getText().toString().trim();
+
+                          prefs.edit().putString(KEY_JSON, json).apply();
+
+                          Intent intent = VpnService.prepare(this);
+
+                          if (intent != null) {
+                              vpnPermissionLauncher.launch(intent);
+                          } else {
+                              startVpnService();
+                          }
+                      } else {
+                          stopVpnService();
+                      }
+                  });
+              }
+
+              private void startVpnService() {
+                  String json = etJsonConfig.getText().toString().trim();
+
+                  Intent intent = new Intent(this, SocksVpnService.class);
+                  intent.putExtra("JSON_CONFIG", json);
+
+                  startForegroundService(intent);
+
+                  isRunning = true;
+                  btnToggle.setText("قطع اتصال (Disconnect)");
+              }
+
+              private void stopVpnService() {
+                  Intent intent = new Intent(this, SocksVpnService.class);
+                  intent.setAction("STOP_VPN");
+
+                  startService(intent);
+
+                  isRunning = false;
+                  btnToggle.setText("اتصال (Connect)");
+              }
+          }
+          EOF
+
+          cat << 'EOF' > app/src/main/java/net/typeblog/socks/SocksVpnService.java
+          package net.typeblog.socks;
+
+          import android.app.Notification;
+          import android.app.NotificationChannel;
+          import android.app.NotificationManager;
+          import android.content.Intent;
+          import android.net.VpnService;
+          import android.os.Build;
+          import android.os.ParcelFileDescriptor;
+
+          import net.typeblog.socks.util.FragmentConfigParser;
+
+          import java.io.File;
+          import java.lang.reflect.Method;
+          import java.util.ArrayList;
+          import java.util.List;
+
+          public class SocksVpnService extends VpnService {
+
+              private ParcelFileDescriptor vpnInterface;
+              private Process byeDpiProcess;
+
+              private static final String CHANNEL_ID = "FragmentVpnChannel";
+
+              @Override
+              public int onStartCommand(Intent intent, int flags, int startId) {
+
+                  if (intent != null &&
+                      "STOP_VPN".equals(intent.getAction())) {
+
+                      stopVpn();
+                      stopSelf();
+
+                      return START_NOT_STICKY;
+                  }
+
+                  createNotificationChannel();
+
+                  Notification notification =
+                      new Notification.Builder(this, CHANNEL_ID)
+                          .setContentTitle("Fragment VPN")
+                          .setContentText("متصل با موتور سبک ByeDPI")
+                          .setSmallIcon(android.R.drawable.ic_dialog_info)
+                          .build();
+
+                  startForeground(1, notification);
+
+                  String jsonConfig = intent != null
+                      ? intent.getStringExtra("JSON_CONFIG") : "";
+
+                  FragmentConfigParser.ParsedConfig config =
+                      FragmentConfigParser.parse(jsonConfig);
+
+                  startByeDpi(config);
+                  startTun2Socks(config.localPort);
+
+                  return START_STICKY;
+              }
+
+              private void startByeDpi(
+                  FragmentConfigParser.ParsedConfig config) {
+
+                  try {
+                      stopByeDpi();
+
+                      String binPath =
+                          getApplicationInfo().nativeLibraryDir + "/libciadpi.so";
+
+                      File binFile = new File(binPath);
+
+                      if (!binFile.exists()) return;
+
+                      List<String> cmd = new ArrayList<>();
+                      cmd.add(binPath);
+                      cmd.addAll(config.byeDpiArgs);
+
+                      ProcessBuilder pb = new ProcessBuilder(cmd);
+                      pb.redirectErrorStream(true);
+
+                      byeDpiProcess = pb.start();
+
+                  } catch (Exception e) {
+                      e.printStackTrace();
+                  }
+              }
+
+              private void startTun2Socks(int socksPort) {
+
+                  try {
+                      Builder builder = new Builder();
+
+                      builder.setSession("FragmentVPN");
+                      builder.setMtu(1500);
+                      builder.addAddress("10.0.0.2", 24);
+                      builder.addRoute("0.0.0.0", 0);
+                      builder.addDnsServer("1.1.1.1");
+                      builder.addDisallowedApplication(getPackageName());
+
+                      vpnInterface = builder.establish();
+
+                      if (vpnInterface != null) {
+
+                          int fd = vpnInterface.getFd();
+
+                          Class<?> utilClass =
+                              Class.forName("net.typeblog.socks.util.Utility");
+
+                          for (Method m : utilClass.getDeclaredMethods()) {
+
+                              if (m.getName().equals("startVpn")) {
+
+                                  Class<?>[] params = m.getParameterTypes();
+
+                                  if (params.length == 7) {
+                                      m.invoke(
+                                          null,
+                                          fd,
+                                          "10.0.0.2",
+                                          "255.255.255.0",
+                                          "127.0.0.1",
+                                          socksPort,
+                                          "1.1.1.1",
+                                          1500
+                                      );
+
+                                  } else if (params.length == 6) {
+                                      m.invoke(
+                                          null,
+                                          fd,
+                                          "10.0.0.2",
+                                          "255.255.255.0",
+                                          "127.0.0.1",
+                                          socksPort,
+                                          "1.1.1.1"
+                                      );
+                                  }
+
+                                  break;
+                              }
+                          }
+                      }
+
+                  } catch (Exception e) {
+                      e.printStackTrace();
+                  }
+              }
+
+              private void stopByeDpi() {
+                  if (byeDpiProcess != null) {
+                      byeDpiProcess.destroy();
+                      byeDpiProcess = null;
+                  }
+              }
+
+              private void stopVpn() {
+
+                  stopByeDpi();
+
+                  try {
+                      Class<?> utilClass =
+                          Class.forName("net.typeblog.socks.util.Utility");
+
+                      for (Method m : utilClass.getDeclaredMethods()) {
+
+                          if (m.getName().equals("stopVpn") &&
+                              m.getParameterTypes().length == 0) {
+
+                              m.invoke(null);
+                              break;
+                          }
+                      }
+
+                      if (vpnInterface != null) {
+                          vpnInterface.close();
+                          vpnInterface = null;
+                      }
+
+                  } catch (Exception e) {
+                      e.printStackTrace();
+                  }
+              }
+
+              @Override
+              public void onDestroy() {
+                  stopVpn();
+                  super.onDestroy();
+              }
+
+              private void createNotificationChannel() {
+
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+
+                      NotificationChannel channel =
+                          new NotificationChannel(
+                              CHANNEL_ID,
+                              "Fragment VPN Service",
+                              NotificationManager.IMPORTANCE_LOW
+                          );
+
+                      NotificationManager manager =
+                          getSystemService(NotificationManager.class);
+
+                      if (manager != null) {
+                          manager.createNotificationChannel(channel);
+                      }
+                  }
+              }
+          }
+          EOF
 
       # 3. فعال‌سازی AndroidX و Jetifier
-      - name: Enable AndroidX
+      - name: Enable AndroidX and Jetifier
         shell: bash
         run: |
           set -euo pipefail
 
           touch gradle.properties
 
-          grep -q '^android.useAndroidX=' gradle.properties \
-            && sed -i 's/^android.useAndroidX=.*/android.useAndroidX=true/' gradle.properties \
-            || echo 'android.useAndroidX=true' >> gradle.properties
+          if grep -q '^android.useAndroidX=' gradle.properties; then
+            sed -i 's/^android.useAndroidX=.*/android.useAndroidX=true/' gradle.properties
+          else
+            echo 'android.useAndroidX=true' >> gradle.properties
+          fi
 
-          grep -q '^android.enableJetifier=' gradle.properties \
-            && sed -i 's/^android.enableJetifier=.*/android.enableJetifier=true/' gradle.properties \
-            || echo 'android.enableJetifier=true' >> gradle.properties
+          if grep -q '^android.enableJetifier=' gradle.properties; then
+            sed -i 's/^android.enableJetifier=.*/android.enableJetifier=true/' gradle.properties
+          else
+            echo 'android.enableJetifier=true' >> gradle.properties
+          fi
 
-          echo "Gradle properties:"
+          echo "AndroidX enabled successfully"
           cat gradle.properties
 
       # 4. نصب Java 17
@@ -73,9 +607,9 @@ jobs:
         uses: actions/setup-java@v4
         with:
           java-version: '17'
-          distribution: temurin
+          distribution: 'temurin'
 
-      # 5. نصب Android SDK
+      # 5. آماده‌سازی Android SDK
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
@@ -84,27 +618,40 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           sdkmanager --install "ndk;26.1.10909125"
 
+          test -d "$ANDROID_HOME/ndk/26.1.10909125"
+
       # 7. کامپایل ByeDPI برای ARM64
-      - name: Clone & Compile ByeDPI
+      - name: Clone & Compile ByeDPI (ciadpi)
         shell: bash
         run: |
           set -euo pipefail
+
+          NDK_PATH="$ANDROID_HOME/ndk/26.1.10909125"
+
+          CC="$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang"
+
+          test -x "$CC"
 
           git clone --depth 1 https://github.com/hufrea/byedpi.git byedpi_src
 
           cd byedpi_src
 
-          export NDK="$ANDROID_HOME/ndk/26.1.10909125"
+          rm -f win_service.c
 
-          export CC="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang"
+          "$CC" -O3 -fPIE -pie *.c -o libciadpi.so -llog
 
-          $CC -O3 -fPIE -pie *.c -o libciadpi.so -llog
+          test -f libciadpi.so
 
           mkdir -p ../app/src/main/jniLibs/arm64-v8a
 
           cp libciadpi.so ../app/src/main/jniLibs/arm64-v8a/
+
+          cd ..
+
+          rm -rf byedpi_src
 
           echo "ByeDPI ARM64 compiled successfully."
 
@@ -124,21 +671,23 @@ jobs:
             -keypass 123456 \
             -dname "CN=FragmentVPN, OU=Dev, O=Local, L=Shiraz, S=Fars, C=IR"
 
-      # 9. بررسی تنظیمات Gradle
-      - name: Verify Gradle Configuration
+      # 9. بررسی تنظیمات قبل از Build
+      - name: Verify Build Configuration
         shell: bash
         run: |
           set -euo pipefail
 
-          test -f gradlew
+          chmod +x gradlew
+
           test -f gradle.properties
           test -f app/build.gradle
+          test -f app/src/main/AndroidManifest.xml
+          test -f app/src/main/jniLibs/arm64-v8a/libciadpi.so
+          test -f app/release.jks
 
           grep -q '^android.useAndroidX=true$' gradle.properties
 
-          chmod +x gradlew
-
-          echo "Gradle configuration verified."
+          echo "All build files verified."
 
       # 10. ساخت APK امضاشده
       - name: Build Signed Release APK
@@ -154,19 +703,23 @@ jobs:
             -Pandroid.injected.signing.key.alias=fragment \
             -Pandroid.injected.signing.key.password=123456
 
-      # 11. بررسی خروجی
+      # 11. بررسی APK خروجی
       - name: Verify APK
         shell: bash
         run: |
           set -euo pipefail
 
-          APK="app/build/outputs/apk/release"
+          APK_DIR="app/build/outputs/apk/release"
 
-          find "$APK" -type f -name "*.apk"
+          APK_FILE=$(find "$APK_DIR" -maxdepth 1 -type f -name "*.apk" -print -quit)
 
-          test -n "$(find "$APK" -type f -name '*.apk' -print -quit)"
+          if [ -z "$APK_FILE" ]; then
+            echo "ERROR: APK was not generated."
+            exit 1
+          fi
 
-          echo "APK successfully generated."
+          echo "APK generated successfully:"
+          ls -lh "$APK_FILE"
 
       # 12. آپلود APK
       - name: Upload APK Artifact
