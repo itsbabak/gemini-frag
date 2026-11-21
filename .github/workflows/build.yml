@@ -1,12 +1,12 @@
 
-name: Build SocksDroid Fragment (ByeDPI)
+name: Build Fragment ARM64 APK - SocksDroid + ByeDPI
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - main
       - master
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -27,126 +27,162 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      # 2. دریافت سورس اصلی SocksDroid
-      - name: Clone Base SocksDroid
+      # 2. استخراج خودکار ZIP یا استفاده از پوشه موجود
+      - name: Locate and Extract Custom Overlay
         shell: bash
         run: |
           set -euo pipefail
 
-          git clone --depth 1 --recurse-submodules \
-            https://github.com/bndeff/socksdroid.git base_repo
+          if [ -d "custom_overlay/app" ]; then
+            echo "custom_overlay already exists."
+          else
+            ZIP_FILE=""
 
-          cp -rn base_repo/* .
+            while IFS= read -r file; do
+              if unzip -l "$file" | grep -q 'custom_overlay/app/build.gradle'; then
+                ZIP_FILE="$file"
+                break
+              fi
+            done < <(
+              find . -maxdepth 3 -type f -iname '*.zip' \
+                ! -path './.git/*'
+            )
 
-          test -f gradlew
-          test -f app/build.gradle
+            if [ -z "$ZIP_FILE" ]; then
+              echo "ERROR: ZIP containing custom_overlay was not found."
+              echo "Upload SocksDroid-Fragment-ByeDPI-GitHub.zip to repository root."
+              exit 1
+            fi
 
-      # 3. ادغام فایل‌های سفارشی
-      - name: Merge Custom Fragment Files
+            echo "Found archive: $ZIP_FILE"
+
+            mkdir -p /tmp/fragment_overlay
+
+            unzip -oq "$ZIP_FILE" -d /tmp/fragment_overlay
+
+            OVERLAY_DIR="$(find /tmp/fragment_overlay \
+              -type d -name custom_overlay | head -n 1)"
+
+            if [ -z "$OVERLAY_DIR" ]; then
+              echo "ERROR: custom_overlay directory not found in ZIP."
+              exit 1
+            fi
+
+            cp -a "$OVERLAY_DIR" .
+
+            test -f custom_overlay/app/build.gradle
+            test -f custom_overlay/app/src/main/AndroidManifest.xml
+          fi
+
+          echo "Overlay is ready."
+
+      # 3. دریافت سورس اصلی SocksDroid
+      - name: Clone Original SocksDroid
         shell: bash
         run: |
           set -euo pipefail
 
-          test -f custom_overlay/app/build.gradle
-          test -f custom_overlay/app/src/main/AndroidManifest.xml
+          git clone --depth 1 \
+            https://github.com/bndeff/socksdroid.git /tmp/socksdroid
 
-          cp -f custom_overlay/app/build.gradle \
-            app/build.gradle
+          test -f /tmp/socksdroid/gradlew
+          test -f /tmp/socksdroid/app/build.gradle
 
-          cp -f custom_overlay/app/src/main/AndroidManifest.xml \
-            app/src/main/AndroidManifest.xml
+          # حفظ ساختار اصلی Gradle
+          cp /tmp/socksdroid/gradlew .
+          cp /tmp/socksdroid/build.gradle .
+          cp /tmp/socksdroid/settings.gradle .
+          cp /tmp/socksdroid/gradle.properties ./gradle.properties 2>/dev/null || true
 
-          mkdir -p app/src/main/java/net/typeblog/socks
-          mkdir -p app/src/main/java/net/typeblog/socks/util
-          mkdir -p app/src/main/res/layout
+          rm -rf gradle
+          cp -a /tmp/socksdroid/gradle .
 
-          cp -f custom_overlay/app/src/main/java/net/typeblog/socks/MainActivity.java \
-            app/src/main/java/net/typeblog/socks/MainActivity.java
+          # جایگزینی پوشه اصلی برنامه با سورس اصلی
+          rm -rf app
+          cp -a /tmp/socksdroid/app app
 
-          cp -f custom_overlay/app/src/main/java/net/typeblog/socks/SocksVpnService.java \
-            app/src/main/java/net/typeblog/socks/SocksVpnService.java
+          chmod +x gradlew
 
-          cp -f custom_overlay/app/src/main/java/net/typeblog/socks/util/FragmentConfigParser.java \
-            app/src/main/java/net/typeblog/socks/util/FragmentConfigParser.java
-
-          cp -f custom_overlay/app/src/main/res/layout/activity_main.xml \
-            app/src/main/res/layout/activity_main.xml
-
-          echo "Custom files merged."
+          echo "Original SocksDroid source installed."
 
       # 4. نصب Java
-      - name: Setup Java 17
+      - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: '11'
 
-      # 5. پیدا کردن SDK Manager
-      - name: Locate Android SDK Manager
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          SDK_ROOT="${ANDROID_HOME}"
-
-          SDKMANAGER="$(find "${SDK_ROOT}/cmdline-tools" \
-            -type f -name sdkmanager 2>/dev/null \
-            | sort -V | tail -n 1)"
-
-          if [ -z "${SDKMANAGER}" ]; then
-            echo "Searching alternative SDK locations..."
-
-            SDKMANAGER="$(find /usr/local/lib/android/sdk \
-              -type f -name sdkmanager 2>/dev/null \
-              | sort -V | tail -n 1)"
-          fi
-
-          if [ -z "${SDKMANAGER}" ]; then
-            echo "ERROR: sdkmanager not found."
-            exit 1
-          fi
-
-          echo "SDK Manager: ${SDKMANAGER}"
-
-          echo "$(dirname "${SDKMANAGER}")" >> "$GITHUB_PATH"
-
-          echo "SDKMANAGER_PATH=${SDKMANAGER}" >> "$GITHUB_ENV"
-
-          echo "ANDROID_HOME=${SDK_ROOT}" >> "$GITHUB_ENV"
-          echo "ANDROID_SDK_ROOT=${SDK_ROOT}" >> "$GITHUB_ENV"
-
-      # 6. نصب SDK و NDK
+      # 5. نصب SDK و NDK بدون setup-android
       - name: Install Android SDK and NDK
         shell: bash
         run: |
           set -euo pipefail
 
-          SDKMANAGER="${SDKMANAGER_PATH}"
+          SDK="${ANDROID_HOME}"
 
-          echo "Accepting Android SDK licenses..."
+          SDKMANAGER="$(find "$SDK/cmdline-tools" \
+            -type f -name sdkmanager 2>/dev/null \
+            | sort -V | tail -n 1)"
 
-          yes | "${SDKMANAGER}" --licenses >/dev/null 2>&1 || true
+          if [ -z "$SDKMANAGER" ]; then
+            echo "ERROR: sdkmanager not found."
+            exit 1
+          fi
 
-          echo "Installing Android packages..."
+          echo "SDK Manager: $SDKMANAGER"
 
-          "${SDKMANAGER}" --install \
+          yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
+
+          "$SDKMANAGER" --install \
             "platform-tools" \
             "platforms;android-34" \
             "build-tools;34.0.0" \
             "ndk;${NDK_VERSION}"
 
-          echo "Verifying SDK installation..."
+          test -d "$SDK/platforms/android-34"
+          test -d "$SDK/build-tools/34.0.0"
+          test -d "$SDK/ndk/${NDK_VERSION}"
 
-          test -d "${ANDROID_HOME}/platforms/android-34"
-          test -d "${ANDROID_HOME}/build-tools/34.0.0"
-          test -d "${ANDROID_HOME}/ndk/${NDK_VERSION}"
+          echo "ANDROID_NDK_HOME=$SDK/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
+          echo "$SDK/platform-tools" >> "$GITHUB_PATH"
 
-          echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
+          echo "Android SDK and NDK installed."
 
-          echo "SDK and NDK installed successfully."
+      # 6. ادغام رابط کاربری سفارشی
+      - name: Apply Custom UI
+        shell: bash
+        run: |
+          set -euo pipefail
 
-      # 7. فعال‌سازی AndroidX
-      - name: Enable AndroidX
+          OVERLAY="custom_overlay/app/src/main"
+
+          test -f "$OVERLAY/java/net/typeblog/socks/MainActivity.java"
+          test -f "$OVERLAY/java/net/typeblog/socks/util/FragmentConfigParser.java"
+          test -f "$OVERLAY/res/layout/activity_main.xml"
+          test -f "$OVERLAY/AndroidManifest.xml"
+
+          # رابط کاربری
+          cp "$OVERLAY/java/net/typeblog/socks/MainActivity.java" \
+            app/src/main/java/net/typeblog/socks/MainActivity.java
+
+          # تجزیه‌گر JSON
+          mkdir -p app/src/main/java/net/typeblog/socks/util
+
+          cp "$OVERLAY/java/net/typeblog/socks/util/FragmentConfigParser.java" \
+            app/src/main/java/net/typeblog/socks/util/FragmentConfigParser.java
+
+          # Layout
+          cp "$OVERLAY/res/layout/activity_main.xml" \
+            app/src/main/res/layout/activity_main.xml
+
+          # Manifest سفارشی
+          cp "$OVERLAY/AndroidManifest.xml" \
+            app/src/main/AndroidManifest.xml
+
+          echo "Custom UI applied."
+
+      # 7. تنظیم Gradle و AndroidX
+      - name: Configure Gradle
         shell: bash
         run: |
           set -euo pipefail
@@ -165,7 +201,294 @@ jobs:
             echo 'android.enableJetifier=true' >> gradle.properties
           fi
 
-      # 8. دریافت سورس ByeDPI
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path("app/build.gradle")
+          source = path.read_text()
+
+          # حفظ فایل Gradle اصلی و فقط اصلاح تنظیمات موردنیاز
+          source = re.sub(
+              r'compileSdkVersion\s+\d+',
+              'compileSdkVersion 34',
+              source
+          )
+
+          source = re.sub(
+              r'compileSdk\s+\d+',
+              'compileSdk 34',
+              source
+          )
+
+          if "abiFilters" not in source:
+              pattern = r'(defaultConfig\s*\{)'
+              replacement = (
+                  r'\1\n'
+                  r'        ndk {\n'
+                  r"            abiFilters 'arm64-v8a'\n"
+                  r'        }\n'
+              )
+              source, count = re.subn(
+                  pattern, replacement, source, count=1
+              )
+              if count != 1:
+                  raise SystemExit("defaultConfig not found")
+
+          if "androidx.appcompat:appcompat" not in source:
+              source += """
+          dependencies {
+              implementation 'androidx.appcompat:appcompat:1.6.1'
+              implementation 'com.google.android.material:material:1.11.0'
+              implementation 'androidx.activity:activity:1.8.2'
+          }
+          """
+
+          path.write_text(source)
+          print("Gradle configured.")
+          PY
+
+      # 8. اصلاح سرویس اصلی SocksDroid
+      - name: Integrate ByeDPI With Original VPN Service
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SERVICE="app/src/main/java/net/typeblog/socks/SocksVpnService.java"
+
+          test -f "$SERVICE"
+
+          python3 <<'PY'
+          from pathlib import Path
+
+          path = Path(
+              "app/src/main/java/net/typeblog/socks/SocksVpnService.java"
+          )
+
+          source = path.read_text()
+
+          # اطمینان از اینکه سورس اصلی است
+          if "private void configure(" not in source:
+              raise SystemExit(
+                  "Original SocksVpnService was not found. "
+                  "Refusing to overwrite an incompatible service."
+              )
+
+          if "private void start(int fd," not in source:
+              raise SystemExit("Original tun2socks start method not found.")
+
+          if "mByeDpiProcess" in source:
+              raise SystemExit("ByeDPI integration already exists.")
+
+          # Import ها
+          source = source.replace(
+              "import java.util.Objects;",
+              "import java.util.Objects;\n"
+              "import java.io.File;\n"
+              "import java.util.ArrayList;\n"
+              "import java.util.List;\n"
+              "import net.typeblog.socks.util.FragmentConfigParser;",
+              1
+          )
+
+          # فیلد پردازش ByeDPI
+          source = source.replace(
+              "private boolean mRunning = false;",
+              "private boolean mRunning = false;\n"
+              "    private Process mByeDpiProcess;",
+              1
+          )
+
+          # دریافت JSON و تنظیم پراکسی محلی
+          source = source.replace(
+              'final String server = intent.getStringExtra(INTENT_SERVER);',
+              'final String server = "127.0.0.1";',
+              1
+          )
+
+          source = source.replace(
+              'final int port = intent.getIntExtra(INTENT_PORT, 1080);',
+              'final int port = 10808;',
+              1
+          )
+
+          source = source.replace(
+              'final String username = intent.getStringExtra(INTENT_USERNAME);',
+              'final String username = null;',
+              1
+          )
+
+          source = source.replace(
+              'final String passwd = intent.getStringExtra(INTENT_PASSWORD);',
+              'final String passwd = null;',
+              1
+          )
+
+          source = source.replace(
+              'final String route = intent.getStringExtra(INTENT_ROUTE);',
+              'final String route = "ALL";',
+              1
+          )
+
+          source = source.replace(
+              'final String dns = intent.getStringExtra(INTENT_DNS);',
+              'final String dns = "1.1.1.1";',
+              1
+          )
+
+          # JSON parser و راه‌اندازی موتور قبل از تونل
+          marker = "        // Notifications on Oreo and above need a channel"
+
+          if marker not in source:
+              raise SystemExit("Notification section not found.")
+
+          startup = """
+                  String jsonConfig = intent.getStringExtra("JSON_CONFIG");
+                  FragmentConfigParser.ParsedConfig parsedConfig =
+                          FragmentConfigParser.parse(jsonConfig == null ? "" : jsonConfig);
+
+                  if (!startByeDpi(parsedConfig)) {
+                      Log.e(TAG, "ByeDPI failed to start.");
+                      stopSelf();
+                      return START_NOT_STICKY;
+                  }
+
+          """
+
+          source = source.replace(marker, startup + marker, 1)
+
+          # استفاده از پورت واقعی JSON
+          source = source.replace(
+              'final int port = 10808;',
+              'final int port = parsedConfig.localPort;',
+              1
+          )
+
+          # افزودن توابع مدیریت ByeDPI
+          marker = "    private void stopMe() {"
+
+          if marker not in source:
+              raise SystemExit("stopMe() not found.")
+
+          methods = r'''
+              private boolean startByeDpi(
+                      FragmentConfigParser.ParsedConfig config) {
+                  try {
+                      stopByeDpi();
+
+                      File binary = new File(
+                              getApplicationInfo().nativeLibraryDir,
+                              "libciadpi.so"
+                      );
+
+                      if (!binary.exists()) {
+                          Log.e(TAG, "ByeDPI binary missing: " + binary);
+                          return false;
+                      }
+
+                      List<String> command = new ArrayList<>();
+                      command.add(binary.getAbsolutePath());
+                      command.addAll(config.byeDpiArgs);
+
+                      ProcessBuilder builder = new ProcessBuilder(command);
+                      builder.redirectErrorStream(true);
+                      builder.redirectOutput(
+                              new File(getFilesDir(), "byedpi.log")
+                      );
+
+                      mByeDpiProcess = builder.start();
+
+                      Thread.sleep(500);
+
+                      if (mByeDpiProcess == null ||
+                              !mByeDpiProcess.isAlive()) {
+                          Log.e(TAG, "ByeDPI process exited immediately.");
+                          stopByeDpi();
+                          return false;
+                      }
+
+                      Log.i(TAG, "ByeDPI started.");
+                      return true;
+
+                  } catch (Exception e) {
+                      Log.e(TAG, "ByeDPI startup error", e);
+                      stopByeDpi();
+                      return false;
+                  }
+              }
+
+              private void stopByeDpi() {
+                  if (mByeDpiProcess != null) {
+                      try {
+                          mByeDpiProcess.destroy();
+
+                          if (!mByeDpiProcess.waitFor(
+                                  2,
+                                  java.util.concurrent.TimeUnit.SECONDS)) {
+                              mByeDpiProcess.destroyForcibly();
+                          }
+                      } catch (Exception e) {
+                          mByeDpiProcess.destroyForcibly();
+                      }
+
+                      mByeDpiProcess = null;
+                  }
+              }
+
+          '''
+
+          source = source.replace(marker, methods + marker, 1)
+
+          # خاموش کردن ByeDPI هنگام قطع VPN
+          source = source.replace(
+              "    private void stopMe() {\n",
+              "    private void stopMe() {\n        stopByeDpi();\n",
+              1
+          )
+
+          path.write_text(source)
+
+          print("Original VPN service integrated with ByeDPI.")
+          PY
+
+      # 9. بررسی API و فایل‌های ضروری
+      - name: Verify Source Files
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BASE="app/src/main/java/net/typeblog/socks"
+
+          REQUIRED=(
+            "$BASE/SocksVpnService.java"
+            "$BASE/MainActivity.java"
+            "$BASE/util/Utility.java"
+            "$BASE/util/Constants.java"
+            "$BASE/util/Profile.java"
+            "$BASE/util/ProfileManager.java"
+            "$BASE/util/FragmentConfigParser.java"
+          )
+
+          for file in "${REQUIRED[@]}"; do
+            test -f "$file" || {
+              echo "Missing: $file"
+              exit 1
+            }
+            echo "OK: $file"
+          done
+
+          grep -q "startVpn(Context context, Profile profile)" \
+            "$BASE/util/Utility.java"
+
+          grep -q "INTENT_APP_BYPASS" "$BASE/util/Constants.java"
+          grep -q "INTENT_UDP_GW" "$BASE/util/Constants.java"
+
+          grep -q "startByeDpi" "$BASE/SocksVpnService.java"
+          grep -q "start(int fd," "$BASE/SocksVpnService.java"
+
+          echo "Source verification passed."
+
+      # 10. دریافت سورس ByeDPI
       - name: Clone ByeDPI
         shell: bash
         run: |
@@ -176,43 +499,41 @@ jobs:
 
           test -f byedpi_src/main.c
 
-      # 9. کامپایل ByeDPI برای ARM64
-      - name: Compile ByeDPI ARM64
+      # 11. کامپایل موتور ARM64
+      - name: Build ByeDPI ARM64
         shell: bash
         run: |
           set -euo pipefail
 
-          NDK="${ANDROID_NDK_HOME}"
-
-          TOOLCHAIN="${NDK}/toolchains/llvm/prebuilt/linux-x86_64/bin"
-
+          TOOLCHAIN="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin"
           CC="${TOOLCHAIN}/aarch64-linux-android24-clang"
 
-          test -x "${CC}"
+          test -x "$CC"
 
           cd byedpi_src
 
           mapfile -t SOURCES < <(
-            find . -maxdepth 1 -type f \
-              -name '*.c' \
+            find . -type f -name '*.c' \
               ! -name 'win_service.c' \
+              ! -path './.git/*' \
               | sort
           )
 
           if [ "${#SOURCES[@]}" -eq 0 ]; then
-            echo "No C source files found."
+            echo "No C sources found."
             exit 1
           fi
 
-          echo "Compiling ByeDPI..."
+          echo "C source files:"
+          printf '%s\n' "${SOURCES[@]}"
 
-          "${CC}" \
-            -O3 \
+          "$CC" \
+            -O2 \
             -fPIE \
             -pie \
+            -DANDROID \
             "${SOURCES[@]}" \
-            -o libciadpi.so \
-            -llog
+            -o libciadpi.so
 
           file libciadpi.so
 
@@ -225,9 +546,23 @@ jobs:
 
           test -s app/src/main/jniLibs/arm64-v8a/libciadpi.so
 
-          echo "ByeDPI ARM64 binary created."
+          echo "ByeDPI ARM64 binary built."
 
-      # 10. ساخت Keystore
+      # 12. تنظیم Manifest و مجوزها
+      - name: Verify Android Manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          MANIFEST="app/src/main/AndroidManifest.xml"
+
+          grep -q 'android:name=".MainActivity"' "$MANIFEST"
+          grep -q 'android:name=".SocksVpnService"' "$MANIFEST"
+          grep -q 'android.permission.BIND_VPN_SERVICE' "$MANIFEST"
+
+          echo "Manifest verified."
+
+      # 13. ساخت Keystore
       - name: Generate Release Keystore
         shell: bash
         run: |
@@ -243,10 +578,10 @@ jobs:
             -alias fragment \
             -storepass 123456 \
             -keypass 123456 \
-            -dname "CN=FragmentVPN, OU=Dev, O=Local, L=Local, S=Local, C=US"
+            -dname "CN=FragmentVPN, OU=Dev, O=Fragment, L=Local, S=Local, C=US"
 
-      # 11. ساخت APK
-      - name: Build Signed Release APK
+      # 14. ساخت APK
+      - name: Build Release APK
         shell: bash
         run: |
           set -euo pipefail
@@ -255,6 +590,7 @@ jobs:
 
           ./gradlew \
             --no-daemon \
+            --stacktrace \
             clean \
             assembleRelease \
             -Pandroid.injected.signing.store.file="$(pwd)/app/release.jks" \
@@ -262,34 +598,31 @@ jobs:
             -Pandroid.injected.signing.key.alias=fragment \
             -Pandroid.injected.signing.key.password=123456
 
-      # 12. بررسی APK
+      # 15. بررسی خروجی
       - name: Verify APK
         shell: bash
         run: |
           set -euo pipefail
 
           APK="$(find app/build/outputs/apk/release \
-            -maxdepth 1 \
-            -type f \
-            -name '*.apk' \
-            | head -n 1)"
+            -type f -name '*.apk' | head -n 1)"
 
-          if [ -z "${APK}" ]; then
-            echo "APK was not generated."
+          if [ -z "$APK" ]; then
+            echo "APK not generated."
             exit 1
           fi
 
           echo "APK generated:"
-          ls -lh "${APK}"
+          ls -lh "$APK"
 
           APKSIGNER="${ANDROID_HOME}/build-tools/34.0.0/apksigner"
 
-          if [ -x "${APKSIGNER}" ]; then
-            "${APKSIGNER}" verify "${APK}"
-          fi
+          "$APKSIGNER" verify "$APK"
 
-      # 13. آپلود APK
-      - name: Upload ARM64 APK
+          echo "APK signature verified."
+
+      # 16. آپلود APK
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: Fragment-ByeDPI-ARM64
