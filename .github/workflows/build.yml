@@ -14,8 +14,10 @@ jobs:
           git clone --depth 1 --recurse-submodules https://github.com/bndeff/socksdroid.git .
           rm -rf .git
 
-      - name: Create Custom Gradle, Manifest, Layout & Java Files
+      - name: Clean Old Kotlin/Java Files & Create Custom App
         run: |
+          # حذف تمام کدهای قدیمی UI و سرویس تا تداخل کلاس (Duplicate Class) پیش نیاید
+          find app/src/main/java -type f ! -name "Utility.*" -delete
           mkdir -p app/src/main/java/net/typeblog/socks/util
           mkdir -p app/src/main/res/layout
 
@@ -484,7 +486,7 @@ jobs:
       - name: Build Signed Release APK
         run: |
           chmod +x gradlew
-          ./gradlew assembleRelease --stacktrace \
+          ./gradlew assembleRelease \
             -Pandroid.injected.signing.store.file=$(pwd)/app/release.jks \
             -Pandroid.injected.signing.store.password=123456 \
             -Pandroid.injected.signing.key.alias=fragment \
