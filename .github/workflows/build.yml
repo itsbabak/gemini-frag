@@ -1,19 +1,19 @@
 
-name: Build Fragment ARM64 APK (SocksDroid + ByeDPI)
+name: Build SocksDroid Fragment (ByeDPI)
 
 on:
-  workflow_dispatch:
   push:
     branches:
       - main
       - master
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
   build:
-    name: Build Fragment ARM64
+    name: Build Fragment ARM64 APK
     runs-on: ubuntu-24.04
 
     env:
@@ -23,71 +23,130 @@ jobs:
 
     steps:
 
-      # 1. دریافت سورس اصلی SocksDroid
-      - name: Checkout SocksDroid Source
+      # 1. دریافت مخزن
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Clone Original SocksDroid
+      # 2. دریافت سورس اصلی SocksDroid
+      - name: Clone Base SocksDroid
         shell: bash
         run: |
           set -euo pipefail
 
-          git clone --depth 1 \
+          git clone --depth 1 --recurse-submodules \
             https://github.com/bndeff/socksdroid.git base_repo
 
-          rm -rf base_repo/.git
-
-          cp -a base_repo/. .
-
-          rm -rf base_repo
+          cp -rn base_repo/* .
 
           test -f gradlew
           test -f app/build.gradle
 
-          echo "Original SocksDroid source preserved."
+      # 3. ادغام فایل‌های سفارشی
+      - name: Merge Custom Fragment Files
+        shell: bash
+        run: |
+          set -euo pipefail
 
-      # 2. نصب Java
-      - name: Setup Java 11
+          test -f custom_overlay/app/build.gradle
+          test -f custom_overlay/app/src/main/AndroidManifest.xml
+
+          cp -f custom_overlay/app/build.gradle \
+            app/build.gradle
+
+          cp -f custom_overlay/app/src/main/AndroidManifest.xml \
+            app/src/main/AndroidManifest.xml
+
+          mkdir -p app/src/main/java/net/typeblog/socks
+          mkdir -p app/src/main/java/net/typeblog/socks/util
+          mkdir -p app/src/main/res/layout
+
+          cp -f custom_overlay/app/src/main/java/net/typeblog/socks/MainActivity.java \
+            app/src/main/java/net/typeblog/socks/MainActivity.java
+
+          cp -f custom_overlay/app/src/main/java/net/typeblog/socks/SocksVpnService.java \
+            app/src/main/java/net/typeblog/socks/SocksVpnService.java
+
+          cp -f custom_overlay/app/src/main/java/net/typeblog/socks/util/FragmentConfigParser.java \
+            app/src/main/java/net/typeblog/socks/util/FragmentConfigParser.java
+
+          cp -f custom_overlay/app/src/main/res/layout/activity_main.xml \
+            app/src/main/res/layout/activity_main.xml
+
+          echo "Custom files merged."
+
+      # 4. نصب Java
+      - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '11'
+          java-version: '17'
 
-      # 3. نصب Android SDK و NDK بدون پکیج tools
+      # 5. پیدا کردن SDK Manager
+      - name: Locate Android SDK Manager
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SDK_ROOT="${ANDROID_HOME}"
+
+          SDKMANAGER="$(find "${SDK_ROOT}/cmdline-tools" \
+            -type f -name sdkmanager 2>/dev/null \
+            | sort -V | tail -n 1)"
+
+          if [ -z "${SDKMANAGER}" ]; then
+            echo "Searching alternative SDK locations..."
+
+            SDKMANAGER="$(find /usr/local/lib/android/sdk \
+              -type f -name sdkmanager 2>/dev/null \
+              | sort -V | tail -n 1)"
+          fi
+
+          if [ -z "${SDKMANAGER}" ]; then
+            echo "ERROR: sdkmanager not found."
+            exit 1
+          fi
+
+          echo "SDK Manager: ${SDKMANAGER}"
+
+          echo "$(dirname "${SDKMANAGER}")" >> "$GITHUB_PATH"
+
+          echo "SDKMANAGER_PATH=${SDKMANAGER}" >> "$GITHUB_ENV"
+
+          echo "ANDROID_HOME=${SDK_ROOT}" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=${SDK_ROOT}" >> "$GITHUB_ENV"
+
+      # 6. نصب SDK و NDK
       - name: Install Android SDK and NDK
         shell: bash
         run: |
           set -euo pipefail
 
-          SDKMANAGER="${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
+          SDKMANAGER="${SDKMANAGER_PATH}"
 
-          if [ ! -x "$SDKMANAGER" ]; then
-            SDKMANAGER="$(find "${ANDROID_HOME}/cmdline-tools" \
-              -type f -name sdkmanager | sort -V | tail -n 1)"
-          fi
+          echo "Accepting Android SDK licenses..."
 
-          if [ -z "${SDKMANAGER:-}" ] || [ ! -x "$SDKMANAGER" ]; then
-            echo "ERROR: sdkmanager not found."
-            exit 1
-          fi
+          yes | "${SDKMANAGER}" --licenses >/dev/null 2>&1 || true
 
-          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          echo "Installing Android packages..."
 
-          "$SDKMANAGER" \
+          "${SDKMANAGER}" --install \
             "platform-tools" \
-            "platforms;android-31" \
-            "build-tools;31.0.0" \
+            "platforms;android-34" \
+            "build-tools;34.0.0" \
             "ndk;${NDK_VERSION}"
 
-          echo "${ANDROID_HOME}/platform-tools" >> "$GITHUB_PATH"
+          echo "Verifying SDK installation..."
+
+          test -d "${ANDROID_HOME}/platforms/android-34"
+          test -d "${ANDROID_HOME}/build-tools/34.0.0"
+          test -d "${ANDROID_HOME}/ndk/${NDK_VERSION}"
 
           echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
 
-          test -d "${ANDROID_HOME}/platforms/android-31"
-          test -d "${ANDROID_HOME}/ndk/${NDK_VERSION}"
+          echo "SDK and NDK installed successfully."
 
-      # 4. فعال‌سازی AndroidX و تنظیم ARM64
-      - name: Configure Gradle and ARM64
+      # 7. فعال‌سازی AndroidX
+      - name: Enable AndroidX
         shell: bash
         run: |
           set -euo pipefail
@@ -106,280 +165,6 @@ jobs:
             echo 'android.enableJetifier=true' >> gradle.properties
           fi
 
-          python3 <<'PY'
-          from pathlib import Path
-          import re
-
-          path = Path("app/build.gradle")
-          source = path.read_text()
-
-          if "abiFilters" not in source:
-              pattern = r"(defaultConfig\s*\{)"
-              replacement = (
-                  r"\1\n"
-                  r"        ndk {\n"
-                  r"            abiFilters 'arm64-v8a'\n"
-                  r"        }\n"
-              )
-
-              source, count = re.subn(
-                  pattern,
-                  replacement,
-                  source,
-                  count=1
-              )
-
-              if count != 1:
-                  raise SystemExit(
-                      "Could not locate defaultConfig in app/build.gradle"
-                  )
-
-          path.write_text(source)
-          print("ARM64 ABI configured.")
-          PY
-
-      # 5. اصلاح Profile برای اتصال به SOCKS محلی
-      - name: Configure Local ByeDPI Proxy
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          PROFILE="app/src/main/java/net/typeblog/socks/util/Profile.java"
-
-          test -f "$PROFILE"
-
-          python3 <<'PY'
-          from pathlib import Path
-
-          path = Path(
-              "app/src/main/java/net/typeblog/socks/util/Profile.java"
-          )
-
-          source = path.read_text()
-
-          source = source.replace(
-              'mPref.getInt(key("port"), 1080)',
-              'mPref.getInt(key("port"), 10808)'
-          )
-
-          path.write_text(source)
-
-          print("Default SOCKS port configured: 10808")
-          PY
-
-      # 6. اصلاح سرویس اصلی بدون حذف API پروژه
-      - name: Integrate ByeDPI Into Original VPN Service
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          SERVICE="app/src/main/java/net/typeblog/socks/SocksVpnService.java"
-
-          test -f "$SERVICE"
-
-          python3 <<'PY'
-          from pathlib import Path
-
-          path = Path(
-              "app/src/main/java/net/typeblog/socks/SocksVpnService.java"
-          )
-
-          source = path.read_text()
-
-          if "mByeDpiProcess" in source:
-              raise SystemExit("ByeDPI integration already exists.")
-
-          # Import
-          if "import java.io.File;" not in source:
-              marker = "import java.util.Objects;"
-              if marker not in source:
-                  raise SystemExit("Cannot locate Java imports.")
-              source = source.replace(
-                  marker,
-                  marker + "\nimport java.io.File;",
-                  1
-              )
-
-          # Process field
-          marker = "private boolean mRunning = false;"
-          if marker not in source:
-              raise SystemExit("Cannot locate mRunning field.")
-
-          source = source.replace(
-              marker,
-              marker + "\n    private Process mByeDpiProcess;",
-              1
-          )
-
-          # Use local ByeDPI SOCKS endpoint
-          source = source.replace(
-              'final String server = intent.getStringExtra(INTENT_SERVER);',
-              'final String server = "127.0.0.1";'
-          )
-
-          source = source.replace(
-              'final int port = intent.getIntExtra(INTENT_PORT, 1080);',
-              'final int port = 10808;'
-          )
-
-          source = source.replace(
-              'final String username = intent.getStringExtra(INTENT_USERNAME);',
-              'final String username = null;'
-          )
-
-          source = source.replace(
-              'final String passwd = intent.getStringExtra(INTENT_PASSWORD);',
-              'final String passwd = null;'
-          )
-
-          if 'final String server = "127.0.0.1";' not in source:
-              raise SystemExit("Could not configure local SOCKS server.")
-
-          if 'final int port = 10808;' not in source:
-              raise SystemExit("Could not configure local SOCKS port.")
-
-          # Start ByeDPI before configuring tun2socks
-          marker = "        // Create an fd."
-          if marker not in source:
-              raise SystemExit("Could not locate VPN startup section.")
-
-          source = source.replace(
-              marker,
-              """        if (!startByeDpi()) {
-                      stopForeground(true);
-                      stopSelf();
-                      return START_NOT_STICKY;
-                  }
-
-          """ + marker,
-              1
-          )
-
-          # Add ByeDPI process methods
-          marker = "    private void stopMe() {"
-          if marker not in source:
-              raise SystemExit("Could not locate stopMe().")
-
-          methods = r'''
-              private boolean startByeDpi() {
-                  try {
-                      stopByeDpi();
-
-                      File binary = new File(
-                              getApplicationInfo().nativeLibraryDir,
-                              "libciadpi.so"
-                      );
-
-                      if (!binary.isFile()) {
-                          Log.e(TAG, "ByeDPI binary not found: " + binary);
-                          return false;
-                      }
-
-                      binary.setExecutable(true, false);
-
-                      ProcessBuilder builder = new ProcessBuilder(
-                              binary.getAbsolutePath(),
-                              "-i", "127.0.0.1",
-                              "-p", "10808",
-                              "--split", "3"
-                      );
-
-                      builder.redirectErrorStream(true);
-                      builder.redirectOutput(
-                              new File(getFilesDir(), "byedpi.log")
-                      );
-
-                      mByeDpiProcess = builder.start();
-
-                      Thread.sleep(400);
-
-                      if (mByeDpiProcess == null ||
-                              !mByeDpiProcess.isAlive()) {
-                          Log.e(TAG, "ByeDPI process failed to start.");
-                          stopByeDpi();
-                          return false;
-                      }
-
-                      Log.i(TAG, "ByeDPI started on 127.0.0.1:10808");
-                      return true;
-
-                  } catch (Exception e) {
-                      Log.e(TAG, "Unable to start ByeDPI", e);
-                      stopByeDpi();
-                      return false;
-                  }
-              }
-
-              private void stopByeDpi() {
-                  if (mByeDpiProcess != null) {
-                      try {
-                          mByeDpiProcess.destroy();
-
-                          if (!mByeDpiProcess.waitFor(2,
-                                  java.util.concurrent.TimeUnit.SECONDS)) {
-                              mByeDpiProcess.destroyForcibly();
-                          }
-                      } catch (Exception e) {
-                          mByeDpiProcess.destroyForcibly();
-                      }
-
-                      mByeDpiProcess = null;
-                  }
-              }
-
-          '''
-
-          source = source.replace(marker, methods + marker, 1)
-
-          # Stop ByeDPI when VPN stops
-          source = source.replace(
-              "    private void stopMe() {\n",
-              "    private void stopMe() {\n        stopByeDpi();\n",
-              1
-          )
-
-          path.write_text(source)
-
-          print("Original SocksVpnService patched successfully.")
-          PY
-
-          grep -n "startByeDpi\|stopByeDpi\|10808" "$SERVICE"
-
-      # 7. بررسی اینکه کلاس‌های اصلی حذف نشده باشند
-      - name: Verify Original SocksDroid Classes
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          BASE="app/src/main/java/net/typeblog/socks"
-
-          REQUIRED=(
-            "$BASE/util/Utility.java"
-            "$BASE/util/Constants.java"
-            "$BASE/util/Profile.java"
-            "$BASE/util/ProfileManager.java"
-            "$BASE/SocksVpnService.java"
-          )
-
-          for FILE in "${REQUIRED[@]}"; do
-            if [ ! -f "$FILE" ]; then
-              echo "Missing required source: $FILE"
-              exit 1
-            fi
-            echo "OK: $FILE"
-          done
-
-          grep -q "startVpn(Context context, Profile profile)" \
-            "$BASE/util/Utility.java"
-
-          grep -q "INTENT_APP_BYPASS" \
-            "$BASE/util/Constants.java"
-
-          grep -q "INTENT_UDP_GW" \
-            "$BASE/util/Constants.java"
-
-          echo "Original SocksDroid API verified."
-
       # 8. دریافت سورس ByeDPI
       - name: Clone ByeDPI
         shell: bash
@@ -390,7 +175,6 @@ jobs:
             https://github.com/hufrea/byedpi.git byedpi_src
 
           test -f byedpi_src/main.c
-          test -f byedpi_src/Makefile
 
       # 9. کامپایل ByeDPI برای ARM64
       - name: Compile ByeDPI ARM64
@@ -398,13 +182,13 @@ jobs:
         run: |
           set -euo pipefail
 
-          NDK="${ANDROID_HOME}/ndk/${NDK_VERSION}"
+          NDK="${ANDROID_NDK_HOME}"
 
           TOOLCHAIN="${NDK}/toolchains/llvm/prebuilt/linux-x86_64/bin"
 
           CC="${TOOLCHAIN}/aarch64-linux-android24-clang"
 
-          test -x "$CC"
+          test -x "${CC}"
 
           cd byedpi_src
 
@@ -416,16 +200,19 @@ jobs:
           )
 
           if [ "${#SOURCES[@]}" -eq 0 ]; then
-            echo "No ByeDPI C sources found."
+            echo "No C source files found."
             exit 1
           fi
 
-          "$CC" \
+          echo "Compiling ByeDPI..."
+
+          "${CC}" \
             -O3 \
             -fPIE \
             -pie \
             "${SOURCES[@]}" \
-            -o libciadpi.so
+            -o libciadpi.so \
+            -llog
 
           file libciadpi.so
 
@@ -438,7 +225,7 @@ jobs:
 
           test -s app/src/main/jniLibs/arm64-v8a/libciadpi.so
 
-          echo "ByeDPI ARM64 binary ready."
+          echo "ByeDPI ARM64 binary created."
 
       # 10. ساخت Keystore
       - name: Generate Release Keystore
@@ -456,7 +243,7 @@ jobs:
             -alias fragment \
             -storepass 123456 \
             -keypass 123456 \
-            -dname "CN=FragmentVPN, OU=Dev, O=Fragment, L=Local, S=Local, C=US"
+            -dname "CN=FragmentVPN, OU=Dev, O=Local, L=Local, S=Local, C=US"
 
       # 11. ساخت APK
       - name: Build Signed Release APK
@@ -487,24 +274,21 @@ jobs:
             -name '*.apk' \
             | head -n 1)"
 
-          if [ -z "$APK" ]; then
-            echo "APK not found."
+          if [ -z "${APK}" ]; then
+            echo "APK was not generated."
             exit 1
           fi
 
-          echo "APK: $APK"
+          echo "APK generated:"
+          ls -lh "${APK}"
 
-          ls -lh "$APK"
+          APKSIGNER="${ANDROID_HOME}/build-tools/34.0.0/apksigner"
 
-          APKSIGNER="${ANDROID_HOME}/build-tools/31.0.0/apksigner"
-
-          if [ -x "$APKSIGNER" ]; then
-            "$APKSIGNER" verify "$APK"
+          if [ -x "${APKSIGNER}" ]; then
+            "${APKSIGNER}" verify "${APK}"
           fi
 
-          echo "APK verification completed."
-
-      # 13. آپلود خروجی
+      # 13. آپلود APK
       - name: Upload ARM64 APK
         uses: actions/upload-artifact@v4
         with:
