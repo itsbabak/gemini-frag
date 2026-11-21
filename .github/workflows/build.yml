@@ -452,10 +452,13 @@ jobs:
           echo "Using Preinstalled NDK: $NDK_PATH"
           git clone --depth 1 https://github.com/hufrea/byedpi.git byedpi_src
           cd byedpi_src
+          rm -f win_service.c
           CC="$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang"
           $CC -O3 -fPIE -pie *.c -o libciadpi.so -llog -lpthread
           mkdir -p ../app/src/main/jniLibs/arm64-v8a
           cp libciadpi.so ../app/src/main/jniLibs/arm64-v8a/
+          cd ..
+          rm -rf byedpi_src
 
       - name: Generate Release Keystore
         run: |
